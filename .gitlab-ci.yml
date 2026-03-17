@@ -67,15 +67,15 @@ validate_bootstrap:
   rules:
     - if: '$BOOTSTRAP_READY != "true" && $CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: 
-        - envs/00-bootstrap/**/*
-        - modules/bootstrap/**/*
+        - terraform/envs/00-bootstrap/**/*
+        - terraform/modules/bootstrap/**/*
     - if: $CI_COMMIT_BRANCH == "main"
       changes: 
-        - envs/00-bootstrap/**/*
-        - modules/bootstrap/**/*
+        - terraform/envs/00-bootstrap/**/*
+        - terraform/modules/bootstrap/**/*
   script:
     - *vault
-    - cd envs/00-bootstrap
+    - cd terraform/envs/00-bootstrap
     - terraform fmt -check -diff -recursive
     - terraform validate
 
@@ -85,20 +85,20 @@ plan_bootstrap:
   rules:
     - if: '$BOOTSTRAP_READY != "true" && $CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: 
-        - envs/00-bootstrap/**/*
-        - modules/bootstrap/**/*
+        - terraform/envs/00-bootstrap/**/*
+        - terraform/modules/bootstrap/**/*
     - if: $CI_COMMIT_BRANCH == "main"
       changes: 
-        - envs/00-bootstrap/**/*
-        - modules/bootstrap/**/*
+        - terraform/envs/00-bootstrap/**/*
+        - terraform/modules/bootstrap/**/*
   script:
     - *vault
-    - cd envs/00-bootstrap
+    - cd terraform/envs/00-bootstrap
     - terraform init -reconfigure
     - terraform plan -out=tfplan
   artifacts:
     paths:
-      - envs/00-bootstrap/tfplan
+      - terraform/envs/00-bootstrap/tfplan
     expire_in: "1 day"
 
 apply_bootstrap:
@@ -110,13 +110,13 @@ apply_bootstrap:
   rules:
     - if: '$BOOTSTRAP_READY != "true" && $CI_COMMIT_BRANCH == "main"'
       changes: 
-        - envs/00-bootstrap/**/*
-        - modules/bootstrap/**/*
+        - terraform/envs/00-bootstrap/**/*
+        - terraform/modules/bootstrap/**/*
       when: manual
   allow_failure: false
   script:
     - *vault
-    - cd envs/00-bootstrap
+    - cd terraform/envs/00-bootstrap
     - terraform init -reconfigure
     - terraform apply -auto-approve tfplan
    
@@ -132,8 +132,8 @@ bootstrap_minio:
   rules:
     - if: '$BOOTSTRAP_READY != "true" && $CI_COMMIT_BRANCH == "main"'
       changes: 
-        - envs/00-bootstrap/**/*
-        - modules/bootstrap/**/*
+        - terraform/envs/00-bootstrap/**/*
+        - terraform/modules/bootstrap/**/*
       when: manual
   before_script:
     - set -euo pipefail
@@ -154,8 +154,8 @@ bootstrap_vault:
   rules:
     - if: '$BOOTSTRAP_READY != "true" && $CI_COMMIT_BRANCH == "main"'
       changes: 
-        - envs/00-bootstrap/**/*
-        - modules/bootstrap/**/*
+        - terraform/envs/00-bootstrap/**/*
+        - terraform/modules/bootstrap/**/*
       when: manual
   before_script:
     - set -euo pipefail
@@ -192,15 +192,15 @@ validate_k8s:
   rules:
     - if: '$BOOTSTRAP_READY == "true" && $CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - envs/20-k8s/**/*
-        - modules/**/*
+        - terraform/envs/20-k8s/**/*
+        - terraform/modules/**/*
     - if: '$BOOTSTRAP_READY == "true" && $CI_COMMIT_BRANCH == "main"'
       changes:
-        - envs/20-k8s/**/*
-        - modules/**/*
+        - terraform/envs/20-k8s/**/*
+        - terraform/modules/**/*
   script:
     - *vault
-    - cd envs/20-k8s
+    - cd terraform/envs/20-k8s
     - terraform fmt -check -diff -recursive
     - terraform validate
 
@@ -210,12 +210,12 @@ plan_k8s:
   rules:
     - if: '$BOOTSTRAP_READY == "true" && $CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - envs/20-k8s/**/*
-        - modules/**/*
+        - terraform/envs/20-k8s/**/*
+        - terraform/modules/**/*
     - if: '$BOOTSTRAP_READY == "true" && $CI_COMMIT_BRANCH == "main"'
       changes:
-        - envs/20-k8s/**/*
-        - modules/**/*
+        - terraform/envs/20-k8s/**/*
+        - terraform/modules/**/*
   script:
     - *vault
     - cd envs/20-k8s
@@ -223,7 +223,7 @@ plan_k8s:
     - terraform plan -out=tfplan
   artifacts:
     paths:
-      - envs/20-k8s/tfplan
+      - terraform/envs/20-k8s/tfplan
     expire_in: "1 day"
 
 apply_k8s:
@@ -235,12 +235,12 @@ apply_k8s:
   rules:
     - if: '$BOOTSTRAP_READY == "true" && $CI_COMMIT_BRANCH == "main"'
       changes: 
-        - envs/20-k8s/**/*
-        - modules/**/*
+        - terraform/envs/20-k8s/**/*
+        - terraform/modules/**/*
       when: manual
   script:
     - *vault
-    - cd envs/20-k8s
+    - cd terraform/envs/20-k8s
     - terraform init -reconfigure
     - terraform apply -auto-approve tfplan
 
