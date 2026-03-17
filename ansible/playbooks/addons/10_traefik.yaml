@@ -1,0 +1,31 @@
+- hosts: k8s_controlplane
+  become: true
+  vars:
+    traefik_chart_version: "39.0.4"
+
+  tasks:
+    - name: Ensure kubeconfig
+      include_tasks: ../../tasks/k8s_ensure_kubeconfig.yaml
+
+    - name: Ensure helm
+      include_tasks: ../../tasks/k8s_ensure_helm.yaml
+
+    - name: Add Traefik Helm repo
+      command: helm repo add traefik https://helm.traefik.io/traefik
+      register: repo_add
+      failed_when: repo_add.rc != 0 and ("already exists" not in (repo_add.stderr | lower))
+      changed_when: repo_add.rc == 0
+
+    - name: Helm repo update
+      command: helm repo update
+      changed_when: false
+    
+    - name: Install/Upgrade Traefik
+      command: >
+        helm upgrade --install traefik traefik/traefik
+        --namespace traefik
+        --create-namespace
+        --version {{ traefik_chart_version }}
+        --set service.type=LoadBalancer
+      environment: 
+        KUBECONFIG: "{{ k8s_kubeconfig }}"

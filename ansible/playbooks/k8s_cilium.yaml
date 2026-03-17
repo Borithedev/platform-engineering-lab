@@ -1,0 +1,39 @@
+- hosts: k8s_controlplane
+  become: true
+  vars:
+    cilium_version: "1.15.6"
+    kubeconfig: "/etc/kubernetes/admin.conf"
+    k8s_api_server_ip: "{{ hostvars[groups['k8s_controlplane'][0]].ansible_host }}"
+
+  tasks:
+    - name: Install Helm (if missing)
+      shell: |
+        set -e
+        if ! command -v helm >/dev/null 2>&1; then
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Add Cilium Helm repo
+      command: helm repo add cilium https://helm.cilium.io/
+      register: repo_add
+      failed_when: repo_add.rc != 0 and ("already exists" not in (repo_add.stderr | lower))
+      changed_when: repo_add.rc == 0
+
+    - name: Helm repo update
+      command: helm repo update
+      changed_when: false
+
+    - name: Install/Upgrade Cilium
+      command: >
+        helm upgrade --install cilium cilium/cilium
+        --version {{ cilium_version }}
+        --namespace kube-system
+        --set kubeProxyReplacement=true
+        --set k8sServiceHost={{ k8s_api_server_ip }}
+        --set k8sServicePort=6443
+        --set ipam.mode=kubernetes
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"

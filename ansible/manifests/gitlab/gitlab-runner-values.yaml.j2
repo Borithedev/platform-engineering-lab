@@ -1,0 +1,18 @@
+gitlabUrl: "{{ gitlab_runner_gitlab_url }}"
+runnerToken: "{{ gitlab_runner_token }}"
+
+rbac:
+  create: true
+
+runners:
+  config: |
+    [[runners]]
+      name = "k8s-runner"
+      url = "{{ gitlab_runner_gitlab_url }}"
+      token = "{{ gitlab_runner_token }}"
+      executor = "kubernetes"
+      [runners.kubernetes]
+        namespace = "gitlab-runner"
+        image = "ubuntu:22.04"
+        privileged = true
+        poll_timeout = 600

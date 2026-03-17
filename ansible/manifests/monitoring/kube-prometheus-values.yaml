@@ -1,0 +1,48 @@
+grafana:
+  nodeSelector:
+    role: observability
+  tolerations:
+    - key: observability
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: longhorn
+
+prometheus:
+  prometheusSpec:
+    nodeSelector:
+      role: observability
+    tolerations:
+      - key: observability
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+alertmanager:
+  alertmanagerSpec:
+    nodeSelector:
+      role: observability
+    tolerations:
+      - key: observability
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 5Gi

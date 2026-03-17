@@ -1,0 +1,34 @@
+- hosts: k8s_controlplane
+  become: true
+
+  tasks:
+    - name: Ensure kubeconfig
+      include_tasks: ../../tasks/k8s_ensure_kubeconfig.yaml
+
+    - name: Ensure helm
+      include_tasks: ../../tasks/k8s_ensure_helm.yaml
+
+    - name: Add Longhorn repo
+      command: helm repo add longhorn https://charts.longhorn.io
+      register: repo_add
+      failed_when: repo_add.rc != 0 and ("already exists" not in (repo_add.stderr | lower))
+      changed_when: repo_add.rc == 0
+
+    - name: Helm repo update
+      command: helm repo update
+      changed_when: false
+
+    - name: Copy kube-prometheus values file
+      copy:
+        src: ../../manifests/longhorn/longhorn-values.yaml
+        dest: /tmp/longhorn-values.yaml
+        mode: "0644"  
+
+    - name: Install Longhorn
+      command: >
+        helm upgrade --install longhorn longhorn/longhorn
+        --namespace longhorn-system
+        --create-namespace
+        -f /tmp/longhorn-values.yaml
+      environment:
+        KUBECONFIG: "{{ k8s_kubeconfig }}"

@@ -1,0 +1,495 @@
+stages:
+  - bootstrap_validate
+  - bootstrap_plan
+  - bootstrap_apply
+  - bootstrap_platform
+  - bootstrap_checkpoint
+  - validate
+  - plan
+  - apply
+  - cluster
+  - addons
+  - workloads
+
+default:
+  image:
+    name: hashicorp/terraform:1.9.8
+    entrypoint: [""]
+
+variables:
+  TF_IN_AUTOMATION: "true"
+
+.vault: &vault |
+  set -euo pipefail
+  apk add --no-cache curl jq
+  VAULT_TOKEN=$(curl -s \
+    --request POST \
+    --data "{\"role_id\":\"$TF_VAULT_ROLE_ID\",\"secret_id\":\"$TF_VAULT_SECRET_ID\"}" \
+    "$VAULT_ADDR/v1/auth/approle/login" | jq -r '.auth.client_token')
+
+  PROX=$(curl -s -H "X-Vault-Token: $VAULT_TOKEN" \
+    "$VAULT_ADDR/v1/kv/data/iac/proxmox" | jq -r '.data.data')
+
+  MINIO=$(curl -s -H "X-Vault-Token: $VAULT_TOKEN" \
+    "$VAULT_ADDR/v1/kv/data/iac/minio" | jq -r '.data.data')
+
+  export TF_VAR_proxmox_endpoint=$(echo "$PROX" | jq -r '.proxmox_endpoint')
+  export TF_VAR_proxmox_host_api_token=$(echo "$PROX" | jq -r '.proxmox_host_api_token')
+  export TF_VAR_proxmox_username=$(echo "$PROX" | jq -r '.proxmox_username')
+  export TF_VAR_proxmox_password=$(echo "$PROX" | jq -r '.proxmox_password')
+
+  export AWS_ACCESS_KEY_ID=$(echo "$MINIO" | jq -r '.access_key')
+  export AWS_SECRET_ACCESS_KEY=$(echo "$MINIO" | jq -r '.secret_key')
+  export MINIO_ROOT_USER=$(echo "$MINIO" | jq -r '.minio_root_user')
+  export MINIO_ROOT_PASSWORD=$(echo "$MINIO" | jq -r '.minio_root_password')
+
+.infra_tags: &infra_tags
+  tags:
+      - docker
+      - terraform
+      - infra
+
+.ansible_infra_tags: &ansible_infra_tags
+  tags:
+      - ansible
+      - infra
+
+.k8s_tags: &k8s_tags
+  tags:
+      - ansible
+      - k8s
+
+#BOOTSTRAP ENVIRONMENT
+
+validate_bootstrap:
+  stage: bootstrap_validate
+  <<: *infra_tags
+  rules:
+    - if: '$BOOTSTRAP_READY != "true" && $CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: 
+        - envs/00-bootstrap/**/*
+        - modules/bootstrap/**/*
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes: 
+        - envs/00-bootstrap/**/*
+        - modules/bootstrap/**/*
+  script:
+    - *vault
+    - cd envs/00-bootstrap
+    - terraform fmt -check -diff -recursive
+    - terraform validate
+
+plan_bootstrap:
+  stage: bootstrap_plan
+  <<: *infra_tags
+  rules:
+    - if: '$BOOTSTRAP_READY != "true" && $CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: 
+        - envs/00-bootstrap/**/*
+        - modules/bootstrap/**/*
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes: 
+        - envs/00-bootstrap/**/*
+        - modules/bootstrap/**/*
+  script:
+    - *vault
+    - cd envs/00-bootstrap
+    - terraform init -reconfigure
+    - terraform plan -out=tfplan
+  artifacts:
+    paths:
+      - envs/00-bootstrap/tfplan
+    expire_in: "1 day"
+
+apply_bootstrap:
+  stage: bootstrap_apply
+  <<: *infra_tags
+  needs:
+    - job: plan_bootstrap
+      artifacts: true
+  rules:
+    - if: '$BOOTSTRAP_READY != "true" && $CI_COMMIT_BRANCH == "main"'
+      changes: 
+        - envs/00-bootstrap/**/*
+        - modules/bootstrap/**/*
+      when: manual
+  allow_failure: false
+  script:
+    - *vault
+    - cd envs/00-bootstrap
+    - terraform init -reconfigure
+    - terraform apply -auto-approve tfplan
+   
+
+bootstrap_minio:
+  stage: bootstrap_platform
+  image:
+    name: python:3.11-alpine
+    entrypoint: [""]
+  <<: *ansible_infra_tags
+  needs:
+    - apply_bootstrap
+  rules:
+    - if: '$BOOTSTRAP_READY != "true" && $CI_COMMIT_BRANCH == "main"'
+      changes: 
+        - envs/00-bootstrap/**/*
+        - modules/bootstrap/**/*
+      when: manual
+  before_script:
+    - set -euo pipefail
+    - apk add --no-cache openssh-client git
+    - pip install ansible
+  script:
+    - cd ansible
+    - ansible-playbook -i inventories/bootstrap/hosts.ini playbooks/bootstrap_minio.yaml --extra-vars "minio_root_user=$MINIO_ROOT_USER minio_root_password=$MINIO_ROOT_PASSWORD tfstate_user_secret_key=$AWS_SECRET_ACCESS_KEY"
+
+bootstrap_vault:
+  stage: bootstrap_platform
+  image:
+    name: python:3.11-alpine
+    entrypoint: [""]
+  <<: *ansible_infra_tags
+  needs:
+    - apply_bootstrap
+  rules:
+    - if: '$BOOTSTRAP_READY != "true" && $CI_COMMIT_BRANCH == "main"'
+      changes: 
+        - envs/00-bootstrap/**/*
+        - modules/bootstrap/**/*
+      when: manual
+  before_script:
+    - set -euo pipefail
+    - apk add --no-cache openssh-client git
+    - pip install ansible
+  script:
+    - cd ansible
+    - ansible-playbook -i inventories/bootstrap/hosts.ini playbooks/bootstrap_vault.yaml
+
+bootstrap_ready_checkpoint:
+  stage: bootstrap_checkpoint
+  <<: *infra_tags
+  needs:
+    - bootstrap_vault
+    - bootstrap_minio
+  rules:
+    - if: '$BOOTSTRAP_READY != "true" && $CI_COMMIT_BRANCH == "main"'
+      when: manual
+  script:
+    - echo "Confirm Vault/MinIO/GitLab are initialised, unsealed, configured, and CI variables are updated before proceeding."
+    - echo "Confirm the following before continuing:"
+    - echo "1. Vault is initialised and unsealed"
+    - echo "2. KV is enabled and secrets are written"
+    - echo "3. AppRoles are created"
+    - echo "4. MinIO bucket/users exist"
+    - echo "5. GitLab CI variables are updated if credential changed"
+    - echo "6. Set BOOTSTRAP_READY variable to true"
+
+#K8S INFRASTRUCTURE
+
+validate_k8s:
+  stage: validate
+  <<: *infra_tags
+  rules:
+    - if: '$BOOTSTRAP_READY == "true" && $CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - envs/20-k8s/**/*
+        - modules/**/*
+    - if: '$BOOTSTRAP_READY == "true" && $CI_COMMIT_BRANCH == "main"'
+      changes:
+        - envs/20-k8s/**/*
+        - modules/**/*
+  script:
+    - *vault
+    - cd envs/20-k8s
+    - terraform fmt -check -diff -recursive
+    - terraform validate
+
+plan_k8s:
+  stage: plan
+  <<: *infra_tags
+  rules:
+    - if: '$BOOTSTRAP_READY == "true" && $CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - envs/20-k8s/**/*
+        - modules/**/*
+    - if: '$BOOTSTRAP_READY == "true" && $CI_COMMIT_BRANCH == "main"'
+      changes:
+        - envs/20-k8s/**/*
+        - modules/**/*
+  script:
+    - *vault
+    - cd envs/20-k8s
+    - terraform init -reconfigure
+    - terraform plan -out=tfplan
+  artifacts:
+    paths:
+      - envs/20-k8s/tfplan
+    expire_in: "1 day"
+
+apply_k8s:
+  stage: apply
+  <<: *infra_tags
+  needs:
+    - job: plan_k8s
+      artifacts: true
+  rules:
+    - if: '$BOOTSTRAP_READY == "true" && $CI_COMMIT_BRANCH == "main"'
+      changes: 
+        - envs/20-k8s/**/*
+        - modules/**/*
+      when: manual
+  script:
+    - *vault
+    - cd envs/20-k8s
+    - terraform init -reconfigure
+    - terraform apply -auto-approve tfplan
+
+#K8S CLUSTER BOOTSTRAP
+
+cluster_prereqs:
+  stage: cluster
+  image: 
+    name: python:3.11-alpine
+    entrypoint: [""]
+  <<: *ansible_infra_tags
+  needs:
+    - apply_k8s
+  rules:
+    - if: '$BOOTSTRAP_READY == "true" && $CI_COMMIT_BRANCH == "main"'
+      changes: 
+        - ansible/playbooks/**/*
+        - ansible/inventories/k8s/**/*
+      when: manual
+  before_script:
+    - set -euo pipefail
+    - apk add --no-cache openssh-client git
+    - pip install ansible
+  script:
+    - cd ansible
+    - ansible-playbook -i inventories/k8s/hosts.ini playbooks/k8s_prereqs.yaml
+
+cluster_controlplane_init:
+  stage: cluster
+  image:
+    name: python:3.11-alpine
+    entrypoint: [""]
+  <<: *ansible_infra_tags
+  needs:
+    - apply_k8s
+  rules:
+    - if: '$BOOTSTRAP_READY == "true" && $CI_COMMIT_BRANCH == "main"'
+      changes: 
+        - ansible/playbooks/**/*
+        - ansible/inventories/k8s/**/*
+      when: manual
+  before_script:
+    - set -euo pipefail
+    - apk add --no-cache openssh-client git
+    - pip install ansible
+  script:
+    - cd ansible
+    - ansible-playbook -i inventories/k8s/hosts.ini playbooks/k8s_controlplane_init.yaml
+
+cluster_install_cilium:
+  stage: cluster
+  image:
+    name: python:3.11-alpine
+    entrypoint: [""]
+  <<: *ansible_infra_tags
+  needs:
+    - apply_k8s
+  rules:
+    - if: '$BOOTSTRAP_READY == "true" && $CI_COMMIT_BRANCH == "main"'
+      changes: 
+        - ansible/playbooks/**/*
+        - ansible/inventories/k8s/**/*
+      when: manual
+  before_script:
+    - set -euo pipefail
+    - apk add --no-cache openssh-client git
+    - pip install ansible
+  script:
+    - cd ansible
+    - ansible-playbook -i inventories/k8s/hosts.ini playbooks/k8s_cilium.yaml
+
+cluster_workers_join:
+  stage: cluster
+  image:
+    name: python:3.11-alpine
+    entrypoint: [""]
+  <<: *ansible_infra_tags
+  needs:
+    - apply_k8s
+    - cluster_install_cilium
+  rules:
+    - if: '$BOOTSTRAP_READY == "true" && $CI_COMMIT_BRANCH == "main"'
+      changes: 
+        - ansible/playbooks/**/*
+        - ansible/inventories/k8s/**/*
+      when: manual
+  before_script:
+    - set -euo pipefail
+    - apk add --no-cache openssh-client git
+    - pip install ansible
+  script:
+    - cd ansible
+    - ansible-playbook -i inventories/k8s/hosts.ini playbooks/k8s_join_token.yaml
+    - ansible-playbook -i inventories/k8s/hosts.ini playbooks/k8s_workers_join.yaml
+
+#CLUSTER ADD-ONS
+
+addon_metallb:
+  stage: addons
+  image:
+    name: python:3.11-alpine
+    entrypoint: [""]
+  <<: *ansible_infra_tags
+  needs:
+    - cluster_workers_join
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes: 
+        - ansible/playbooks/addons/00_metallb.yaml
+        - ansible/manifests/metallb/**/*
+        - ansible/inventories/k8s/**/*
+      when: manual
+  before_script:
+    - set -euo pipefail
+    - apk add --no-cache curl jq openssh-client git
+    - pip install ansible
+  script:
+    - cd ansible
+    - ansible-playbook -i inventories/k8s/hosts.ini playbooks/addons/00_metallb.yaml
+
+addon_traefik:
+  stage: addons
+  image:
+    name: python:3.11-alpine
+    entrypoint: [""]
+  <<: *ansible_infra_tags
+  needs:
+    - cluster_workers_join
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes: 
+        - ansible/playbooks/addons/10_traefik.yaml
+        - ansible/inventories/k8s/**/*
+      when: manual
+  before_script:
+    - set -euo pipefail
+    - apk add --no-cache curl jq openssh-client git
+    - pip install ansible
+  script:
+    - cd ansible
+    - ansible-playbook -i inventories/k8s/hosts.ini playbooks/addons/10_traefik.yaml
+
+addon_cert_manager:
+  stage: addons
+  image:
+    name: python:3.11-alpine
+    entrypoint: [""]
+  <<: *ansible_infra_tags
+  needs:
+    - cluster_workers_join
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes: 
+        - ansible/playbooks/addons/20_cert_manager.yaml
+        - ansible/inventories/k8s/**/*
+      when: manual
+  before_script:
+    - set -euo pipefail
+    - apk add --no-cache curl jq openssh-client git
+    - pip install ansible
+  script:
+    - cd ansible
+    - ansible-playbook -i inventories/k8s/hosts.ini playbooks/addons/20_cert_manager.yaml
+
+addon_rancher:
+  stage: addons
+  image:
+    name: python:3.11-alpine
+    entrypoint: [""]
+  <<: *ansible_infra_tags
+  needs:
+    - cluster_workers_join
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes: 
+        - ansible/playbooks/addons/30_rancher.yaml
+        - ansible/manifests/rancher/**/*
+        - ansible/inventories/k8s/**/*
+      when: manual
+  before_script:
+    - set -euo pipefail
+    - apk add --no-cache curl jq openssh-client git
+    - pip install ansible
+  script:
+    - cd ansible
+    - ansible-playbook -i inventories/k8s/hosts.ini playbooks/addons/30_rancher.yaml
+
+addon_monitoring:
+  stage: addons
+  image:
+    name: python:3.11-alpine
+    entrypoint: [""]
+  <<: *ansible_infra_tags
+  needs:
+    - cluster_workers_join
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes: 
+          - ansible/playbooks/addons/50_kube_prometheus_stack.yaml
+          - ansible/playbooks/addons/60_monitoring_ingress.yaml
+          - ansible/manifests/monitoring/**/*
+          - ansible/inventories/k8s/**/*
+      when: manual
+  before_script:
+    - set -euo pipefail
+    - apk add --no-cache curl jq openssh-client git
+    - pip install ansible
+  script:
+    - cd ansible
+    - ansible-playbook -i inventories/k8s/hosts.ini playbooks/addons/40_longhorn.yaml
+    - ansible-playbook -i inventories/k8s/hosts.ini playbooks/addons/50_kube_prometheus_stack.yaml
+    - ansible-playbook -i inventories/k8s/hosts.ini playbooks/addons/60_monitoring_ingress.yaml
+
+addon_gitlab_runner:
+  stage: addons
+  image:
+    name: python:3.11-alpine
+    entrypoint: [""]
+  <<: *ansible_infra_tags
+  needs:
+    - cluster_workers_join
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes: 
+        - ansible/playbooks/addons/70_gitlab_runner.yaml
+        - ansible/manifests/gitlab/**/*
+        - ansible/inventories/k8s/**/*
+      when: manual
+  before_script:
+    - set -euo pipefail
+    - apk add --no-cache curl jq openssh-client git
+    - pip install ansible
+  script:
+    - cd ansible
+    - ansible-playbook -i inventories/k8s/hosts.ini playbooks/addons/70_gitlab_runner.yaml --extra-vars "vault_role_id=$ANSIBLE_VAULT_ROLE_ID vault_secret_id=$ANSIBLE_VAULT_SECRET_ID"
+
+#FUTURE IN-CLUSTER WORKLOADS
+
+deploy_workloads_k8s:
+  stage: workloads
+  image:
+    name: alpine/helm:3.15.4
+    entrypoint: [""]
+    pull_policy: if-not-present
+  <<: *k8s_tags
+  needs:
+    - addon_gitlab_runner
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+  script:
+    - echo "Reserved for future in-cluster workload deployments"
