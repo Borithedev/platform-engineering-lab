@@ -1,0 +1,48 @@
+- hosts: k8s_controlplane
+  become: true
+  vars:
+    rancher_chart_repo: "https://releases.rancher.com/server-charts/latest"
+    homelab_domain: home.arpa
+    rancher_hostname: "rancher.{{ homelab_domain }}"
+    grafana_hostname: "grafana.{{ homelab_domain }}"
+    prometheus_hostname: "prometheus.{{ homelab_domain }}"
+
+  tasks:
+
+    - name: Ensure kubeconfig
+      include_tasks: ../../tasks/k8s_ensure_kubeconfig.yaml
+
+    - name: Ensure helm
+      include_tasks: ../../tasks/k8s_ensure_helm.yaml
+
+    - name: Copy SelfSigned Cluster Issuer manifest
+      copy:
+        src: ../../manifests/rancher/selfsigned-clusterissuer.yaml
+        dest: /tmp/selfsigned-clusterissuer.yaml
+        mode: "0644"
+
+    - name: Apply SelfSigned Cluster Issuer 
+      command: kubectl apply -f /tmp/selfsigned-clusterissuer.yaml
+      environment:
+        KUBECONFIG: "{{ k8s_kubeconfig }}"  
+
+    - name: Add Rancher Helm repo
+      command: helm repo add rancher-latest {{ rancher_chart_repo }}
+      register: repo_add
+      failed_when: repo_add.rc != 0 and ("already exists" not in (repo_add.stderr | lower))
+      changed_when: repo_add.rc == 0
+
+    - name: Helm repo update
+      command: helm repo update
+      changed_when: false
+    
+    - name: Install/Upgrade Rancher
+      command: >
+        helm upgrade --install rancher rancher-latest/rancher
+        --namespace cattle-system
+        --create-namespace
+        --set hostname={{ rancher_hostname }}
+        --set ingress.tls.source=secret
+        --set ingress.tls.source=selfsigned
+      environment:
+        KUBECONFIG: "{{ k8s_kubeconfig }}"

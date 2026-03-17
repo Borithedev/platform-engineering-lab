@@ -1,0 +1,136 @@
+---
+- name: Install and run HashiCorp Vault (systemd, single-node raft, HTTP)
+  hosts: vault
+  become: true
+  vars:
+    vault_version: "1.21.2"
+    vault_bin_path: /usr/local/bin/vault
+    vault_user: vault
+    vault_group: vault
+    vault_config_dir: /etc/vault.d
+    vault_data_dir: /opt/vault/data
+
+    vault_api_addr: "http://192.168.0.138:8200"
+    vault_cluster_addr: "http://192.168.0.138:8201"
+  
+  tasks:
+    - name: Install dependencies
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - unzip
+        update_cache: true
+
+    - name: Create vault user
+      user:
+        name: "{{ vault_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    - name: Create config directory
+      file:
+        path: "{{ vault_config_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create data directory
+      file:
+        path: "{{ vault_data_dir }}"
+        state: directory
+        owner: "{{ vault_user }}"
+        group: "{{ vault_group }}"
+        mode: "0750"
+
+    - name: Download MinIO server binary
+      get_url:
+        url: "https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_amd64.zip"
+        dest: "/tmp/vault_{{ vault_version }}.zip"
+        mode: "0644"
+        force: true
+
+    - name: Unzip Vault binary
+      unarchive: 
+        src: "/tmp/vault_{{ vault_version }}.zip"
+        dest: /tmp
+        remote_src: true
+
+    - name: Install Vault binary
+      copy:
+        src: /tmp/vault
+        dest: "{{ vault_bin_path }}"
+        owner: root
+        group: root
+        mode: "0755"
+        remote_src: true
+
+    - name: Create Vault config (raft, HTTP)
+      copy:
+        dest: "{{ vault_config_dir }}/vault.hcl"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          ui = true
+
+          disable_mlock = true
+
+          storage "raft" {
+            path = "{{ vault_data_dir }}"
+            node_id = "vault-01"
+          }
+
+          # HTTP listener
+          listener "tcp" {
+            address = "0.0.0.0:8200"
+            tls_disable = 1
+          }
+
+          api_addr = "{{ vault_api_addr }}"
+          cluster_addr = "{{ vault_cluster_addr }}"
+
+    - name: Create systemd unit
+      copy:
+        dest: /etc/systemd/system/vault.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=HashiCorp Vault
+          Documentation=https://developer.hashicorp.com/vault/docs/
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          User={{ vault_user }}
+          Group={{ vault_group }}
+          ExecStart={{ vault_bin_path }} server -config={{ vault_config_dir }}/vault.hcl
+          ExecReload=/bin/kill --signal HUP $MAINPID
+          Restart=on-failure
+          LimitNOFILE=65536
+          CapabilityBoundingSet=CAP_IPC_LOCK
+          AmbientCapabilities=CAP_IPC_LOCK
+          NoNewPrivilages=yes
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: true
+
+    - name: Enable and start MinIO
+      systemd:
+        name: vault
+        enabled: true
+        state: started
+
+    - name: Check Vault is reachable
+      uri:
+        url: "http://127.0.0.1:8200/v1/sys/health"
+        method: GET
+        status_code: [200, 429, 472,473, 501, 503]

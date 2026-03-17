@@ -1,0 +1,39 @@
+- hosts: k8s_controlplane
+  become: true
+  vars:
+    pod_cidr: "10.244.0.0/16"
+    service_cidr: "10.96.0.0/12"
+    cri_socket: "unix:///run/containerd/containerd.sock"
+
+  tasks:
+    - name: Check if cluster already initialised
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf
+
+    - name: kubeadm init (single control plane)
+      command: kubeadm init --pod-network-cidr={{ pod_cidr }} --service-cidr={{ service_cidr }} --cri-socket={{ cri_socket }}
+      when: not admin_conf.stat.exists
+      register: kubeadm_init
+
+    - name: Ensure kubeconfig dir for ubuntu user
+      file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0700"
+
+    - name: Copy admin.conf to ubuntu kubeconfig
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ubuntu/.kube/config
+        remote_src: true
+        owner: ubuntu
+        group: ubuntu
+        mode: "0600"
+    
+    - name: Show kubeadm init output
+      debug:
+        var: kubeadm_init.stdout_lines
+      when: kubeadm_init is defined

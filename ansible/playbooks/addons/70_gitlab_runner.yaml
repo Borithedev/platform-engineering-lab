@@ -1,0 +1,105 @@
+- hosts: k8s_controlplane
+  become: true
+  vars:
+    gitlab_runner_chart_version: "0.86.0"
+    vault_addr: "http://vault.home.arpa:8200"
+    vault_runner_secret_path: "kv/data/iac/gitlab-runner"
+    vault_role_id: ""
+    vault_secret_id: ""
+
+  tasks:
+
+    - name: Ensure kubeconfig
+      include_tasks: ../../tasks/k8s_ensure_kubeconfig.yaml
+
+    - name: Ensure helm
+      include_tasks: ../../tasks/k8s_ensure_helm.yaml
+
+    - name: Fail if Vault AppRole inputs are missing
+      assert:
+        that:
+          - vault_role_id | length > 0
+          - vault_secret_id | length > 0
+        fail_msg: "vault_role_id and vault_secret_id must be provided."
+
+    - name: Login to Vault w/ AppRole
+      uri:
+        url: "{{ vault_addr }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ vault_role_id }}"
+          secret_id: "{{ vault_secret_id }}"
+        return_content: true
+        status_code:
+          - 200
+      become: false
+      delegate_to: localhost
+      run_once: true
+      register: vault_login
+
+    - name: Set Vault token fact
+      set_fact:
+        vault_token: "{{ vault_login.json.auth.client_token }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Read GitLab Runner secret from Vault
+      uri:
+        url: "{{ vault_addr }}/v1/{{ vault_runner_secret_path }}"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ vault_token }}"
+        return_content: true
+        status_code:
+          - 200
+      become: false
+      delegate_to: localhost
+      run_once: true
+      register: gitlab_runner_secret
+
+    - name: Set GitLab Runner facts
+      set_fact:
+        gitlab_runner_gitlab_url: "{{ gitlab_runner_secret.json.data.data.gitlab_url }}"
+        gitlab_runner_token: "{{ gitlab_runner_secret.json.data.data.runner_token }}"
+      become: false
+      delegate_to: localhost
+      delegate_facts: true
+      run_once: true
+
+    - name: Add GitLab repo
+      command: helm repo add gitlab https://charts.gitlab.io
+      register: repo_add
+      failed_when: repo_add.rc != 0 and ("already exists" not in (repo_add.stderr | lower))
+      changed_when: repo_add.rc == 0
+
+    - name: Helm repo update
+      command: helm repo update
+      changed_when: false
+
+    - name: Render GitLab Runner values file locally
+      template:
+        src: ../../manifests/gitlab/gitlab-runner-values.yaml.j2
+        dest: /tmp/gitlab-runner-values.yaml
+        mode: "0600"
+      vars:
+        gitlab_runner_gitlab_url: "{{ hostvars['localhost'].gitlab_runner_gitlab_url }}"
+        gitlab_runner_token: "{{ hostvars['localhost'].gitlab_runner_token }}"
+      become: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Copy GitLab Runner values file to control plane
+      copy:
+        src: /tmp/gitlab-runner-values.yaml
+        dest: /tmp/gitlab-runner-values.yaml
+        mode: "0600"
+
+    - name: Install GitLab Runner
+      command: >
+        helm upgrade --install gitlab-runner gitlab/gitlab-runner
+        --namespace gitlab-runner
+        --create-namespace
+        -f /tmp/gitlab-runner-values.yaml
+      environment:
+        KUBECONFIG: "{{ k8s_kubeconfig }}"

@@ -1,0 +1,62 @@
+- hosts: k8s_controlplane
+  become: true
+  tasks:
+    - name: Ensure kubeconfig
+      include_tasks: ../../tasks/k8s_ensure_kubeconfig.yaml
+
+    - name: Ensure helm
+      include_tasks: ../../tasks/k8s_ensure_helm.yaml
+
+    - name: Add metallb chart repo
+      command: helm repo add metallb https://metallb.github.io/metallb
+      register: repo_add
+      failed_when: repo_add.rc != 0 and ("already exists" not in (repo_add.stderr | lower))
+      changed_when: repo_add.rc == 0
+
+    - name: Helm repo update
+      command: helm repo update
+      changed_when: false
+
+    - name: Install/upgrade MetalLB
+      command: >
+        helm upgrade --install metallb metallb/metallb
+        --namespace metallb-system
+        --create-namespace
+      environment:
+        KUBECONFIG: "{{ k8s_kubeconfig }}"
+    
+    - name: Copy MetalLB address pool manifest
+      copy:
+        src: ../../manifests/metallb/addresspool.yaml
+        dest: /tmp/metallb-addresspool.yaml
+        mode: "0644"
+
+    - name: Wait for MetalLB controller rollout
+      command: >
+        kubectl -n metallb-system rollout status deployment/metallb-controller --timeout=180s
+      environment:
+        KUBECONFIG: "{{ k8s_kubeconfig }}"
+      changed_when: false
+
+    - name: Wait for MetalLB speaker rollout
+      command: >
+        kubectl -n metallb-system rollout status daemonset/metallb-speaker --timeout=180s
+      environment:
+        KUBECONFIG: "{{ k8s_kubeconfig }}"
+      changed_when: false
+
+    - name: Wait for MetalLB webhook endpoint
+      shell: |
+        kubectl -n metallb-system get endpoints metallb-webhook-service -o jsonpath='{.subsets[*].addresses[*].ip}'
+      environment:
+        KUBECONFIG: "{{ k8s_kubeconfig }}"
+      register: metallb_webhook_eps
+      retries: 30
+      delay: 5
+      until: metallb_webhook_eps.stdout | length > 0
+      changed_when: false
+
+    - name: Apply MetalLB address pool
+      command: kubectl apply -f /tmp/metallb-addresspool.yaml
+      environment:
+        KUBECONFIG: "{{ k8s_kubeconfig }}"

@@ -1,0 +1,32 @@
+- hosts: k8s_workers, k8s_observability
+  become: true
+  vars:
+    cri_socket: "unix:///run/containerd/containerd.sock"
+  tasks:
+    - name: Check if node already joined
+      stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: joined
+
+    - name: Fetch join command from control plane
+      slurp:
+        src: /tmp/kubeadm_join.sh
+      delegate_to: "{{ groups['k8s_controlplane'][0] }}"
+      run_once: true
+      register: join_script
+
+    - name: Write join script locally on workers
+      copy:
+        dest: /tmp/kubeadm_join.sh
+        content: "{{ (join_script.content | b64decode) }}"
+        mode: "0700"
+
+    - name: Join cluster
+      command: bash /tmp/kubeadm_join.sh --cri-socket {{ cri_socket }}
+      when: not joined.stat.exists
+
+    - name: label/taint smeagol
+      command: >
+        kubectl label node smeagol role=observability --overwrite
+        kubectl taint node smeagol observability=true:NoSchedule
+      changed_when: false

@@ -1,0 +1,24 @@
+defaultSettings:
+  taintToleration: "observability=true:NoSchedule"
+  defaultReplicaCount: 1
+
+longhornManager:
+  tolerations:
+    - key: "observability"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"
+
+longhornDriver:
+  tolerations:
+    - key: "observability"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"
+    
+longhornUI:
+  tolerations:
+    - key: "observability"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"

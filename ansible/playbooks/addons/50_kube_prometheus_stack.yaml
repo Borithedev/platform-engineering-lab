@@ -1,0 +1,38 @@
+- hosts: k8s_controlplane
+  become: true
+  vars:
+    kube_prometheus_stack_version: "82.8.0"
+
+  tasks:
+
+    - name: Ensure kubeconfig
+      include_tasks: ../../tasks/k8s_ensure_kubeconfig.yaml
+
+    - name: Ensure helm
+      include_tasks: ../../tasks/k8s_ensure_helm.yaml
+
+    - name: Add prometheus-community repo
+      command: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+      register: repo_add
+      failed_when: repo_add.rc != 0 and ("already exists" not in (repo_add.stderr | lower))
+      changed_when: repo_add.rc == 0
+
+    - name: Helm repo update
+      command: helm repo update
+      changed_when: false
+
+    - name: Copy kube-prometheus values file
+      copy:
+        src: ../../manifests/monitoring/kube-prometheus-values.yaml
+        dest: /tmp/kube-prometheus-values.yaml
+        mode: "0644"  
+
+    - name: Install/upgrade kube-prometheus-stack with observability node placement and persistent storage
+      command: >
+        helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack
+        --namespace monitoring
+        --create-namespace
+        --version {{ kube_prometheus_stack_version }}
+        -f /tmp/kube-prometheus-values.yaml
+      environment:
+        KUBECONFIG: "{{ k8s_kubeconfig }}"

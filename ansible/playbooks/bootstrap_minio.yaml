@@ -1,0 +1,186 @@
+---
+- name: Install and run MinIO (systemd, binary)
+  hosts: minio
+  become: true
+  vars:
+    minio_data_dir: /var/lib/minio
+    minio_bin_path: /usr/local/bin/minio
+    minio_user: minio-user
+    minio_group: minio-user
+    minio_alias: "homelab"
+
+    minio_root_user: ""
+    minio_root_password: ""
+
+    minio_api_port: 9000
+    minio_console_port: 9001
+    minio_url: "http://127.0.0.1:{{ minio_api_port }}"
+
+    tfstate_bucket: "tf-state"
+    tfstate_policy_name: "tf-backend"
+    tfstate_user_access_key: "tf-backend"
+    tfstate_user_secret_key: ""
+
+    tfstate_policy_json: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": ["s3:ListBucket"],
+            "Resource": ["arn:aws:s3:::tf-state"]
+          },
+          {
+            "Effect": "Allow",
+            "Action": ["s3:GetObject","s3:PutObject","s3:DeleteObject"],
+            "Resource": ["arn:aws:s3:::tf-state/*"]
+          }
+        ]
+      }
+
+  tasks:
+    - name: Ensure dependencies present
+      apt:
+        name:
+          - ca-certificates
+          - curl
+        update_cache: true
+      
+    - name: Create MinIO system user
+      user:
+        name: "{{ minio_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    - name: Create data directory
+      file:
+        path: "{{ minio_data_dir }}"
+        state: directory
+        owner: "{{ minio_user }}"
+        group: "{{ minio_group }}"
+        mode: "0755"
+
+    - name: Download MinIO server binary
+      get_url:
+        url: "https://dl.min.io/server/minio/release/linux-amd64/minio"
+        dest: "{{ minio_bin_path }}"
+        mode: "0755"
+        force: true
+
+    - name: Create MinIO env file
+      copy:
+        dest: /etc/default/minio
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          MINIO_VOLUMES="{{ minio_data_dir }}"
+          MINIO_OPTS="--address :{{ minio_api_port }} --console-address :{{ minio_console_port }}"
+          MINIO_ROOT_USER="{{ minio_root_user }}"
+          MINIO_ROOT_PASSWORD="{{ minio_root_password }}"
+    
+    - name: Create systemd unit
+      copy:
+        dest: /etc/systemd/system/minio.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=MinIO
+          Documentation=https://docs.min.io
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          User={{ minio_user }}
+          Group={{ minio_group }}
+          EnvironmentFile=/etc/default/minio
+          ExecStart={{ minio_bin_path }} server $MINIO_OPTS $MINIO_VOLUMES
+          Restart=always
+          LimitNOFILE=65536
+          TimeoutStopSec=30
+
+          [Install]
+          WantedBy=multi-user.target
+    
+    - name: Reload systemd
+      systemd:
+        daemon_reload: true
+
+    - name: Enable and start MinIO
+      systemd:
+        name: minio
+        enabled: true
+        state: started
+    
+    - name: Check MinIO is responding (API)
+      uri:
+        url: "{{ minio_url }}/minio/health/live"
+        method: GET
+        status_code: 200 
+      register: minio_health
+      retries: 30
+      delay: 2
+      until: minio_health.status == 200
+#tasks-idemponent platform
+    - name: Check if mc exists
+      stat:
+        path: /usr/local/bin/mc
+      register: mc_bin
+
+    - name: Ensure mc (MinIO client) is installed
+      get_url:
+        url: "https://dl.min.io/client/mc/release/linux-amd64/mc"
+        dest: /usr/local/bin/mc
+        mode: "0755"
+        force: true
+      when: not mc_bin.stat.exists
+
+    - name: Configure mc alias homelab
+      command: >
+        mc alias set {{ minio_alias }}
+        {{ minio_url }}
+        {{ minio_root_user }}
+        {{ minio_root_password }}
+      changed_when: false
+
+    - name: Ensure Terraform state bucket exists
+      command: >
+        mc mb --ignore-existing {{ minio_alias }}/{{ tfstate_bucket }}
+      register: mb_out
+      changed_when: "'created' in (mb_out.stdout | lower)"
+
+    - name: Enable versioning on Terraform state bucket
+      command: >
+        mc version enable {{ minio_alias }}/{{ tfstate_bucket }}
+      register: ver_out
+      # treat as no-change if already enabled
+      changed_when: "'enabled' in (ver_out.stdout | lower)"
+
+    - name: Copy Terraform backend policy JSON to host
+      copy:
+        dest: /tmp/tfstate-policy.json
+        mode: "0600"
+        content: "{{ tfstate_policy_json }}"
+
+    - name: Ensure policy exists
+      command: >
+        mc admin policy create {{ minio_alias }} {{ tfstate_policy_name }} /tmp/tfstate-policy.json
+      register: policy_out
+      failed_when: policy_out.rc != 0 and ('already exists' not in (policy_out.stderr | lower))
+      changed_when: policy_out.rc == 0
+
+    - name: Ensure Terraform user exists
+      command: >
+        mc admin user add {{ minio_alias }} {{ tfstate_user_access_key }} {{ tfstate_user_secret_key }}
+      register: user_out
+      failed_when: user_out.rc != 0 and ('already exists' not in (user_out.stderr | lower))
+      changed_when: user_out.rc == 0
+
+    - name: Attach policy to Terraform user
+      command: >
+        mc admin policy attach {{ minio_alias }} {{ tfstate_policy_name }} --user {{ tfstate_user_access_key }}
+      register: attach_out
+      changed_when: false

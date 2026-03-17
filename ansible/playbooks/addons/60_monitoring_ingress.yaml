@@ -1,0 +1,29 @@
+- hosts: k8s_controlplane
+  become: true
+
+  tasks:
+
+    - name: Ensure kubeconfig
+      include_tasks: ../../tasks/k8s_ensure_kubeconfig.yaml
+
+    - name: Copy Grafana ingress manifest
+      copy:
+        src: ../../manifests/monitoring/grafana-ingress.yaml
+        dest: /tmp/grafana-ingress.yaml
+        mode: "0644"
+
+    - name: Apply Grafana ingress
+      command: kubectl apply -f /tmp/grafana-ingress.yaml
+      environment:
+        KUBECONFIG: "{{ k8s_kubeconfig }}"
+
+    - name: Copy Prometheus ingress manifest
+      copy:
+        src: ../../manifests/monitoring/prometheus-ingress.yaml
+        dest: /tmp/prometheus-ingress.yaml
+        mode: "0644"
+
+    - name: Apply Prometheus ingress
+      command: kubectl apply -f /tmp/prometheus-ingress.yaml
+      environment:
+        KUBECONFIG: "{{ k8s_kubeconfig }}"
