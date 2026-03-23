@@ -29,10 +29,18 @@ locals {
   wk_vmid_base = 910
   smeagol_vmid = 920
 
-  # default specs
-  cp_specs      = { cpu = 2, mem = 4096, disk = 40 }
-  wk_specs      = { cpu = 2, mem = 4096, disk = 40 }
-  smeagol_specs = { cpu = 2, mem = 2048, disk = 50 }
+
+  cp_specs = { node = var.k8s_node_plan["controlplane"].proxmox_node, 
+               cpu = var.k8s_node_plan["controlplane"].cores, 
+               mem = var.k8s_node_plan["controlplane"].mem, 
+               disk = var.k8s_node_plan["controlplane"].disk 
+             }
+
+  smeagol_specs = { node = var.k8s_node_plan["smeagol"].proxmox_node, 
+                    cpu = var.k8s_node_plan["smeagol"].cores, 
+                    mem = var.k8s_node_plan["smeagol"].mem, 
+                    disk = var.k8s_node_plan["smeagol"].disk 
+                  }
 }
 
 # Pick ring-bearer for control plane (persists in state)
@@ -60,13 +68,14 @@ locals {
 }
 # map stable key -> object containing random name + placement(Deterministic placement: round-robin across proxmox_nodes) + vmid
 locals {
-  cp_node = var.proxmox_nodes[0]
-
-  worker_map = {
-    for idx, key in local.worker_keys : key => {
-      name = random_shuffle.worker_names.result[idx]
-      node = var.proxmox_nodes[idx % length(var.proxmox_nodes)]
-      vmid = local.wk_vmid_base + idx + 1
+  worker_nodes = {
+    for idx, name in local.worker_names : local.worker_keys[idx] => {
+      name  = name
+      node  = var.k8s_node_plan[local.worker_keys[idx]].proxmox_node
+      cores = var.k8s_node_plan[local.worker_keys[idx]].cores
+      mem   = var.k8s_node_plan[local.worker_keys[idx]].mem
+      disk  = var.k8s_node_plan[local.worker_keys[idx]].disk
+      vmid  = local.wk_vmid_base + idx + 1
     }
   }
 }
@@ -77,9 +86,9 @@ module "k8s_controlplane" {
   }
   source = "../../modules/proxmox_ubuntu_vm"
 
-  node_name           = local.cp_node
+  node_name           = local.cp_specs.node
   bridge              = var.bridge
-  template_vmid       = var.template_vmid[local.cp_node]
+  template_vmid       = var.template_vmid[local.cp_specs.node]
   hostname            = local.controlplane_name
   name                = local.controlplane_name
   clone_vmid          = local.cp_vmid_base + 1
@@ -98,7 +107,7 @@ module "k8s_workers" {
   providers = {
     proxmox = proxmox.dc1
   }
-  for_each = local.worker_map
+  for_each = local.worker_nodes
   source   = "../../modules/proxmox_ubuntu_vm"
 
   node_name           = each.value.node
@@ -107,9 +116,9 @@ module "k8s_workers" {
   hostname            = each.value.name
   name                = each.value.name
   clone_vmid          = each.value.vmid
-  cores               = local.wk_specs.cpu
-  memory              = local.wk_specs.mem
-  disk_gb             = local.wk_specs.disk
+  cores               = each.value.cores
+  memory              = each.value.mem
+  disk_gb             = each.value.disk
   cloud_config_prefix = each.value.vmid
   dns_servers         = local.dns_servers
   dns_domain          = local.dns_domain
@@ -125,9 +134,9 @@ module "k8s_smeagol" {
   }
   for_each            = var.enable_smeagol ? { smeagol = true } : {}
   source              = "../../modules/proxmox_ubuntu_vm"
-  node_name           = var.proxmox_nodes[1 % length(var.proxmox_nodes)]
+  node_name           = local.smeagol_specs.node
   bridge              = var.bridge
-  template_vmid       = var.template_vmid[var.proxmox_nodes[1 % length(var.proxmox_nodes)]]
+  template_vmid       = var.template_vmid[local.smeagol_specs.node]
   hostname            = "smeagol"
   name                = "smeagol"
   clone_vmid          = local.smeagol_vmid
