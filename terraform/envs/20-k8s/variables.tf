@@ -40,6 +40,16 @@ variable "template_vmid" {
   }
 }
 
+variable "k8s_node_plan" {
+  description = "Scheduler-generated placement and sizing plan"
+  type = map(object({
+    proxmox_node = string
+    cores        = number
+    mem          = number
+    disk         = number
+  }))
+}
+
 variable "worker_count" {
   type        = number
   description = "How many worker nodes to create (not including smeagol if enabled)"

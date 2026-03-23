@@ -1,0 +1,49 @@
+cluster_name: fellowship_of_the_kube
+
+proxmox:
+  endpoint_env: TF_VAR_proxmox_endpoint
+  token_env: TF_VAR_proxmox_host_api_token
+
+candidate_nodes:
+  - pve-01
+  - pve-02
+
+reserves:
+  memory_mb: 4096
+  cpu_cores: 1
+
+defaults:
+  controlplane:
+    cores: 2
+    mem: 4096
+    disk: 100
+  
+  worker:
+    cores: 2
+    mem: 8192
+    disk: 100
+  
+  observer:
+    cores: 4
+    mem: 8192
+    disk: 100
+
+layout:
+  worker_count: 2
+  include_smeagol: true
+
+planning:
+  reclaim_existing_managed_k8s_vms: true
+
+vmid_ranges:
+  cp_base: 900
+  wk_base: 910
+  observer_vmid: 920
+
+placement_policy:
+  controlplane_preferred_nodes:
+    - pve-01
+  observer_preferred_nodes:
+    - pve-02
+
+
