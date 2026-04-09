@@ -31,7 +31,7 @@ This project demonstrates a platform engineering environment designed to simulat
 
 This project was built to simulate enterprise platform engineering practices, focusing on scalability, automation, and reliability.
 
-##Architecture
+## Architecture
 
 <img width="1859" height="1295" alt="HomeLab-1-ach drawio (3)" src="https://github.com/user-attachments/assets/f126ce44-2b61-4e83-873b-638bb6ea32be" />
 
